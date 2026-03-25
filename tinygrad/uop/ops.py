@@ -113,10 +113,12 @@ class recursive_property(property):
   def __init__(self, fxn):
     self.fxn = fxn
     self.nm = "_RECURSIVE_PROPERTY_"+fxn.__name__
+    self._gate = lambda node: self.nm not in node.__dict__
     self.__doc__ = fxn.__doc__
   def __get__(self, x:UOp|None, owner=None):
     if x is None: return self
-    for node in x.toposort(gate=lambda node: self.nm not in node.__dict__): node.__dict__[self.nm] = self.fxn(node)
+    if self.nm in x.__dict__: return x.__dict__[self.nm]
+    for node in x.toposort(gate=self._gate): node.__dict__[self.nm] = self.fxn(node)
     return x.__dict__[self.nm]
 
 # we import this late so we can use resolve/smax in mixins
@@ -165,8 +167,18 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
   @property
   def backward_slice_with_self(self:UOp) -> dict[UOp, None]: return {self:None, **self.backward_slice}
   def op_in_backward_slice_with_self(self, *ops:Ops) -> bool:
-    # Check self first, then iterate backward_slice (avoids creating intermediate dict)
-    return self.op in ops or any(x.op in ops for x in self.backward_slice)
+    if self.op in ops: return True
+    # use cached backward_slice if available, otherwise short-circuit DFS
+    if "backward_slice" in self.__dict__: return any(x.op in ops for x in self.backward_slice)
+    seen: set[UOp] = set()
+    stack: list[UOp] = list(self.src)
+    while stack:
+      node = stack.pop()
+      if node in seen: continue
+      seen.add(node)
+      if node.op in ops: return True
+      stack.extend(node.src)
+    return False
 
   def toposort(self, gate:Callable|None=None, enter_calls=True) -> dict[UOp, None]:
     cache: dict[UOp, None] = {}
