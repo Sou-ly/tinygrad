@@ -86,7 +86,7 @@ def fix_store_after_hazard(after:UOp, target:UOp, src:UOp):
   unsafe = {Ops.PERMUTE, Ops.FLIP} | ({Ops.SHRINK} if target.op_in_backward_slice_with_self(Ops.SHRINK) else set())
   base = target.base
   # early exit: if base is not reachable from src (respecting CONTIGUOUS boundaries), no hazard is possible
-  if not _is_reachable(src, base, gate=lambda s: s.op is not Ops.CONTIGUOUS): return None
+  if not _has_base(src, base): return None
   reaches_base: dict[UOp, bool] = {}
   for s in src.toposort(gate=lambda s: s.op is not Ops.CONTIGUOUS):
     reaches_base[s] = s is base or any(reaches_base.get(c) for c in s.src)
@@ -102,6 +102,18 @@ def _is_reachable(root:UOp, target:UOp, gate=None) -> bool:
     if node in seen: continue
     seen.add(node)
     if gate is None or gate(node): stack.extend(node.src)
+  return False
+
+def _has_base(root:UOp, base:UOp) -> bool:
+  """Check if base is reachable from root without crossing CONTIGUOUS."""
+  seen: set[UOp] = set()
+  stack: list[UOp] = [root]
+  while stack:
+    node = stack.pop()
+    if node is base: return True
+    if node in seen: continue
+    seen.add(node)
+    if node.op is not Ops.CONTIGUOUS: stack.extend(node.src)
   return False
 
 def normalize_store_after_target_chain(after:UOp, target:UOp, src:UOp):
