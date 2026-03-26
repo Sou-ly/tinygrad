@@ -85,16 +85,36 @@ def fix_store_after_hazard(after:UOp, target:UOp, src:UOp):
   # PERMUTE and FLIP reorder indices, SHRINK can have overlapping regions when dest is also shrunk
   unsafe = {Ops.PERMUTE, Ops.FLIP} | ({Ops.SHRINK} if target.op_in_backward_slice_with_self(Ops.SHRINK) else set())
   base = target.base
-  reaches_base: dict[UOp, bool] = {}
-  for s in src.toposort(gate=lambda s: s.op is not Ops.CONTIGUOUS):
-    reaches_base[s] = s is base or any(reaches_base.get(c) for c in s.src)
-    if reaches_base[s] and s.op in unsafe: return after.replace(src=(after.src[0], target.store(src.contiguous())))
+  # combined DFS: check if base is reachable AND if there are unsafe ops, in one pass (stops at CONTIGUOUS)
+  seen: set[UOp] = set()
+  stack: list[UOp] = [src]
+  found_base = False
+  found_unsafe = False
+  while stack:
+    node = stack.pop()
+    if node in seen: continue
+    seen.add(node)
+    if node is base: found_base = True
+    if node.op in unsafe: found_unsafe = True
+    # early exit: if we've found both, the hazard is confirmed
+    if found_base and found_unsafe:
+      return after.replace(src=(after.src[0], target.store(src.contiguous())))
+    if node.op is not Ops.CONTIGUOUS: stack.extend(node.src)
+  # no hazard: either base not reachable, or no unsafe ops in the subgraph
+
+def _is_reachable(root:UOp, target:UOp, gate=None) -> bool:
+  """Check if target is reachable from root via DFS, short-circuiting on find."""
+  return root.dfs_match(lambda node: node is target, gate)
+
+def _has_base(root:UOp, base:UOp) -> bool:
+  """Check if base is reachable from root without crossing CONTIGUOUS."""
+  return root.dfs_match(lambda node: node is base, lambda node: node.op is not Ops.CONTIGUOUS)
 
 def normalize_store_after_target_chain(after:UOp, target:UOp, src:UOp):
   root_target = target
   while root_target.op is Ops.AFTER: root_target = root_target.src[0]
   # when RHS depends on the previous assign result, break with contiguous
-  if target in src.toposort(): src = src.contiguous()
+  if _is_reachable(src, target): src = src.contiguous()
   return after.replace(src=(root_target, root_target.store(src)))
 
 def split_reduceop(reduce:UOp, x:UOp):
