@@ -23,16 +23,7 @@ def realize_store_after_src(ctx:dict[UOp, None], dest:UOp, src:UOp):
      and not dest.op_in_backward_slice_with_self(Ops.SHRINK, Ops.PERMUTE, Ops.FLIP, Ops.PAD):
     del ctx[src]
   # you don't usually have to do this for assign unless there's a WAR hazard like TestAssign.test_assign_double_diamond_reduce
-  # DFS reachability check instead of full backward_slice toposort — short-circuits on first find
-  base = dest.base
-  seen: set[UOp] = set()
-  stack: list[UOp] = [src]
-  while stack:
-    node = stack.pop()
-    if node is base: ctx[src] = None; return
-    if node in seen: continue
-    seen.add(node)
-    stack.extend(node.src)
+  if src.dfs_match(lambda node: node is dest.base): ctx[src] = None
 
 pm_generate_realize_map = PatternMatcher([
   # always realize

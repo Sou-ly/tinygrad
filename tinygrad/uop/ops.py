@@ -118,8 +118,16 @@ class recursive_property(property):
   def __get__(self, x:UOp|None, owner=None):
     if x is None: return self
     if self.nm in x.__dict__: return x.__dict__[self.nm]
-    for node in x.toposort(gate=self._gate): node.__dict__[self.nm] = self.fxn(node)
-    return x.__dict__[self.nm]
+    # fast path: if all direct sources already have this property, compute directly without toposort
+    nm = self.nm
+    src = x.src
+    if len(src) == 0 or (len(src) == 1 and nm in src[0].__dict__) or \
+       (len(src) == 2 and nm in src[0].__dict__ and nm in src[1].__dict__) or \
+       (len(src) >= 3 and all(nm in s.__dict__ for s in src)):
+      x.__dict__[nm] = self.fxn(x)
+      return x.__dict__[nm]
+    for node in x.toposort(gate=self._gate): node.__dict__[nm] = self.fxn(node)
+    return x.__dict__[nm]
 
 # we import this late so we can use resolve/smax in mixins
 from tinygrad.mixin import OpMixin
@@ -166,32 +174,36 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
 
   @property
   def backward_slice_with_self(self:UOp) -> dict[UOp, None]: return {self:None, **self.backward_slice}
-  def op_in_backward_slice_with_self(self, *ops:Ops) -> bool:
-    if self.op in ops: return True
-    # use cached backward_slice if available, otherwise short-circuit DFS
-    if "backward_slice" in self.__dict__: return any(x.op in ops for x in self.backward_slice)
+  def dfs_match(self, match:Callable[[UOp], bool], gate:Callable[[UOp], bool]|None=None) -> bool:
+    """Short-circuit DFS over src graph. Returns True if match(node) is True for any reachable node.
+    Optional gate controls traversal: if gate(node) is False, don't descend into node's sources."""
     seen: set[UOp] = set()
-    stack: list[UOp] = list(self.src)
+    stack: list[UOp] = [self]
     while stack:
       node = stack.pop()
       if node in seen: continue
       seen.add(node)
-      if node.op in ops: return True
-      stack.extend(node.src)
+      if match(node): return True
+      if gate is None or gate(node): stack.extend(node.src)
     return False
+
+  def op_in_backward_slice_with_self(self, *ops:Ops) -> bool:
+    if self.op in ops: return True
+    if "backward_slice" in self.__dict__: return any(x.op in ops for x in self.backward_slice)
+    return self.dfs_match(lambda node: node.op in ops)
 
   def toposort(self, gate:Callable|None=None, enter_calls=True) -> dict[UOp, None]:
     cache: dict[UOp, None] = {}
-    stack: list[tuple[UOp, bool]] = [(self, False)] # each stack entry is (node, visited_flag)
+    stack: list[tuple[UOp, bool]] = [(self, False)]
     while stack:
       node, visited = stack.pop()
       if node in cache: continue
       if not visited:
         if gate is None or gate(node):
-          stack.append((node, True))  # push node back on stack to process after its srcs
+          stack.append((node, True))
           for s in reversed(node.src if enter_calls or node.op is not Ops.CALL else node.src[1:]):
-            stack.append((s, False)) # push srcs on the stack
-      else: cache[node] = None # second time i'm seeing this node, add it to returned toposort
+            stack.append((s, False))
+      else: cache[node] = None
     return cache
 
   def topovisit(self, visitor:Callable[[UOp], T], cache:dict[UOp, T]) -> T:

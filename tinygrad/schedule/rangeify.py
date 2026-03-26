@@ -104,27 +104,11 @@ def fix_store_after_hazard(after:UOp, target:UOp, src:UOp):
 
 def _is_reachable(root:UOp, target:UOp, gate=None) -> bool:
   """Check if target is reachable from root via DFS, short-circuiting on find."""
-  seen: set[UOp] = set()
-  stack: list[UOp] = [root]
-  while stack:
-    node = stack.pop()
-    if node is target: return True
-    if node in seen: continue
-    seen.add(node)
-    if gate is None or gate(node): stack.extend(node.src)
-  return False
+  return root.dfs_match(lambda node: node is target, gate)
 
 def _has_base(root:UOp, base:UOp) -> bool:
   """Check if base is reachable from root without crossing CONTIGUOUS."""
-  seen: set[UOp] = set()
-  stack: list[UOp] = [root]
-  while stack:
-    node = stack.pop()
-    if node is base: return True
-    if node in seen: continue
-    seen.add(node)
-    if node.op is not Ops.CONTIGUOUS: stack.extend(node.src)
-  return False
+  return root.dfs_match(lambda node: node is base, lambda node: node.op is not Ops.CONTIGUOUS)
 
 def normalize_store_after_target_chain(after:UOp, target:UOp, src:UOp):
   root_target = target
